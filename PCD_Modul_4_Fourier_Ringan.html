@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<title>Transformasi Fourier Citra</title>
+<style>
+.channel-container { display:flex; gap:10px; margin-top:10px; flex-wrap:wrap; }
+.channel-block { text-align:center; }
+canvas { border:1px solid #000; margin-top:5px; max-width:100%; height:auto; }
+#resolution { margin-top:10px; }
+button { margin-top:5px; margin-right:5px; }
+button:disabled { opacity:.6; cursor:not-allowed; }
+</style>
+</head>
+<body>
+<h3>Transformasi Fourier Citra</h3>
+<canvas id="gambar" width="300" height="300"></canvas><br>
+<input type="file" id="file1" accept=".jpg,.jpeg,.png,.bmp"><br>
+<div id="resolution"></div>
+<button id="fourierBtn" onclick="transformFourier('gambar')">Fourier Transform</button>
+<button id="inverseBtn" onclick="inverseFourier()" disabled>Inverse Fourier Transform</button>
+<div id="channels" class="channel-container"></div>
+
+<script>
+let originalImage = null;
+let dft2DReal = null, dft2DImag = null;
+let width = 0, height = 0;
+let inverseClicked = false;
+
+function loadImage(fileInput, canvasId) {
+  const file = fileInput.files[0];
+  if (!file) return;
+  const canvas = document.getElementById(canvasId);
+  const ctx = canvas.getContext("2d");
+  const img = new Image();
+  img.onload = function () {
+    // DFT langsung dari modul cukup berat untuk gambar besar.
+    // Karena itu gambar diperkecil sementara hingga sisi terpanjang 128 piksel.
+    const maxSize = 128;
+    const scale = Math.min(1, maxSize / Math.max(img.width, img.height));
+    const processWidth = Math.max(1, Math.round(img.width * scale));
+    const processHeight = Math.max(1, Math.round(img.height * scale));
+
+    canvas.width = processWidth;
+    canvas.height = processHeight;
+    width = processWidth;
+    height = processHeight;
+    ctx.drawImage(img, 0, 0, processWidth, processHeight);
+    originalImage = img;
+    dft2DReal = null;
+    dft2DImag = null;
+    inverseClicked = false;
+    document.getElementById("inverseBtn").disabled = true;
+    document.getElementById("resolution").textContent =
+      `Resolusi asli: ${img.width} x ${img.height} | Resolusi proses Fourier: ${processWidth} x ${processHeight}`;
+    clearChannels();
+    URL.revokeObjectURL(img.src);
+  };
+  img.src = URL.createObjectURL(file);
+}
+
+function clearChannels() {
+  document.getElementById("channels").innerHTML = "";
+}
+
+function createChannelCanvas(label, width, height, imgData) {
+  const container = document.getElementById("channels");
+  const block = document.createElement("div");
+  block.className = "channel-block";
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  canvas.getContext("2d").putImageData(imgData, 0, 0);
+  const caption = document.createElement("p");
+  caption.textContent = label;
+  block.appendChild(canvas);
+  block.appendChild(caption);
+  container.appendChild(block);
+}
+
+// DFT dan IDFT 1D
+function DFT1D(inputReal, inputImag = null) {
+  const N = inputReal.length;
+  const real = new Array(N).fill(0);
+  const imag = new Array(N).fill(0);
+  for (let k = 0; k < N; k++) {
+    for (let n = 0; n < N; n++) {
+      const angle = (-2 * Math.PI * k * n) / N;
+      const valR = inputReal[n];
+      const valI = inputImag ? inputImag[n] : 0;
+      real[k] += valR * Math.cos(angle) - valI * Math.sin(angle);
+      imag[k] += valR * Math.sin(angle) + valI * Math.cos(angle);
+    }
+  }
+  return { real, imag };
+}
+
+function IDFT1D(inputReal, inputImag) {
+  const N = inputReal.length;
+  const outR = new Array(N).fill(0);
+  const outI = new Array(N).fill(0);
+  for (let n = 0; n < N; n++) {
+    let sumR = 0, sumI = 0;
+    for (let k = 0; k < N; k++) {
+      const angle = (2 * Math.PI * k * n) / N;
+      sumR += inputReal[k] * Math.cos(angle) - inputImag[k] * Math.sin(angle);
+      sumI += inputReal[k] * Math.sin(angle) + inputImag[k] * Math.cos(angle);
+    }
+    outR[n] = sumR / N;
+    outI[n] = sumI / N;
+  }
+  return { real: outR, imag: outI };
+}
+
+// Fourier Transform 2D
+function transformFourier(canvasId) {
+  clearChannels();
+  const canvas = document.getElementById(canvasId);
+  const ctx = canvas.getContext("2d");
+  const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  width = canvas.width;
+  height = canvas.height;
+
+  // Grayscale dan centering sebelum DFT
+  let gray = [];
+  for (let y = 0; y < height; y++) {
+    gray[y] = [];
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 4;
+      let g = Math.round(0.299 * imgData.data[i] +
+        0.587 * imgData.data[i + 1] + 0.114 * imgData.data[i + 2]);
+      g = g * ((x + y) % 2 === 0 ? 1 : -1);
+      gray[y][x] = g;
+    }
+  }
+
+  // DFT baris
+  let tempReal = [], tempImag = [];
+  for (let y = 0; y < height; y++) {
+    const result = DFT1D(gray[y]);
+    tempReal[y] = result.real;
+    tempImag[y] = result.imag;
+  }
+
+  // DFT kolom
+  dft2DReal = [];
+  dft2DImag = [];
+  for (let x = 0; x < width; x++) {
+    const colR = [], colI = [];
+    for (let y = 0; y < height; y++) {
+      colR.push(tempReal[y][x]);
+      colI.push(tempImag[y][x]);
+    }
+    const result = DFT1D(colR, colI);
+    for (let y = 0; y < height; y++) {
+      if (!dft2DReal[y]) { dft2DReal[y] = []; dft2DImag[y] = []; }
+      dft2DReal[y][x] = result.real[y];
+      dft2DImag[y][x] = result.imag[y];
+    }
+  }
+
+  // Magnitude log scale
+  const newImgData = ctx.createImageData(width, height);
+  let maxMag = 0;
+  const mag = [];
+  for (let y = 0; y < height; y++) {
+    mag[y] = [];
+    for (let x = 0; x < width; x++) {
+      const val = Math.sqrt(dft2DReal[y][x] ** 2 + dft2DImag[y][x] ** 2);
+      mag[y][x] = Math.log(1 + val);
+      if (mag[y][x] > maxMag) maxMag = mag[y][x];
+    }
+  }
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 4;
+      const val = maxMag === 0 ? 0 : Math.round((mag[y][x] / maxMag) * 255);
+      newImgData.data[i] = newImgData.data[i + 1] = newImgData.data[i + 2] = val;
+      newImgData.data[i + 3] = 255;
+    }
+  }
+  createChannelCanvas("Fourier Transform (Magnitude - Centered)", width, height, newImgData);
+  document.getElementById("inverseBtn").disabled = false;
+  inverseClicked = false;
+}
+
+// Inverse Fourier Transform 2D
+function inverseFourier() {
+  if (inverseClicked) return;
+  if (!dft2DReal || !dft2DImag) {
+    alert("Silakan lakukan Fourier Transform terlebih dahulu!");
+    return;
+  }
+
+  // IDFT kolom
+  let tempReal = [], tempImag = [];
+  for (let x = 0; x < width; x++) {
+    const colR = [], colI = [];
+    for (let y = 0; y < height; y++) {
+      colR.push(dft2DReal[y][x]);
+      colI.push(dft2DImag[y][x]);
+    }
+    const result = IDFT1D(colR, colI);
+    for (let y = 0; y < height; y++) {
+      if (!tempReal[y]) { tempReal[y] = []; tempImag[y] = []; }
+      tempReal[y][x] = result.real[y];
+      tempImag[y][x] = result.imag[y];
+    }
+  }
+
+  // IDFT baris dan mengembalikan centering
+  const newImgData = document.getElementById("gambar")
+    .getContext("2d").createImageData(width, height);
+  for (let y = 0; y < height; y++) {
+    const result = IDFT1D(tempReal[y], tempImag[y]);
+    for (let x = 0; x < width; x++) {
+      let val = result.real[x] * ((x + y) % 2 === 0 ? 1 : -1);
+      val = Math.min(Math.max(Math.round(val), 0), 255);
+      const i = (y * width + x) * 4;
+      newImgData.data[i] = newImgData.data[i + 1] = newImgData.data[i + 2] = val;
+      newImgData.data[i + 3] = 255;
+    }
+  }
+  createChannelCanvas("Inverse Fourier Transform", width, height, newImgData);
+  inverseClicked = true;
+  document.getElementById("inverseBtn").disabled = true;
+}
+
+document.getElementById("file1").addEventListener("change", function () {
+  loadImage(this, "gambar");
+});
+</script>
+</body>
+</html>

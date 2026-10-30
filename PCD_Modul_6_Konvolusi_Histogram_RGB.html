@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<title>Konvolusi & Histogram Equalization</title>
+<style>
+body{font-family:Arial,sans-serif;margin:20px}
+.channel-container{display:flex;gap:10px;margin-top:10px;flex-wrap:wrap}
+.channel-block{text-align:center}
+canvas{border:1px solid #000;margin-top:5px;max-width:100%;height:auto}
+#resolution{margin-top:10px}
+button{margin-top:5px;margin-right:5px}
+.hist-container{display:none;margin-top:20px;flex-direction:column;gap:10px}
+.hist-row{display:flex;gap:20px;flex-wrap:wrap}
+.hist-section{display:flex;flex-direction:column;align-items:center}
+.legend{font-size:13px;margin-top:5px}
+.red{color:red}.green{color:green}.blue{color:blue}
+</style>
+</head>
+<body>
+<h3>Konvolusi & Histogram Equalization</h3>
+<canvas id="gambar" width="300" height="300"></canvas><br>
+<input type="file" id="file1" accept=".jpg,.jpeg,.png,.bmp"><br>
+<div id="resolution"></div>
+<button id="convBtn" onclick="applyConvolution()" disabled>Konvolusi</button>
+<button id="histBtn" onclick="histogramEqualization()" disabled>Histogram Equalization</button>
+<div id="channels" class="channel-container"></div>
+<div id="histContainer" class="hist-container">
+  <div class="hist-row">
+    <div class="hist-section"><canvas id="histBefore" width="256" height="120"></canvas><p>Histogram Sebelum</p></div>
+    <div class="hist-section"><canvas id="histAfter" width="256" height="120"></canvas><p>Histogram Sesudah</p></div>
+  </div>
+  <div class="legend"><span class="red">■ Red</span> &nbsp; <span class="green">■ Green</span> &nbsp; <span class="blue">■ Blue</span></div>
+</div>
+<script>
+let originalImage=null;
+let width=0,height=0;
+
+document.getElementById("file1").addEventListener("change",function(){loadImage(this,"gambar");});
+
+function loadImage(fileInput,canvasId){
+  const file=fileInput.files[0];
+  if(!file)return;
+  const canvas=document.getElementById(canvasId);
+  const ctx=canvas.getContext("2d");
+  const img=new Image();
+  img.onload=function(){
+    canvas.width=img.width; canvas.height=img.height;
+    width=img.width; height=img.height;
+    ctx.drawImage(img,0,0);
+    originalImage=ctx.getImageData(0,0,width,height);
+    document.getElementById("convBtn").disabled=false;
+    document.getElementById("histBtn").disabled=false;
+    document.getElementById("resolution").textContent=`Resolusi: ${width} x ${height}`;
+    clearChannels();
+    document.getElementById("histContainer").style.display="none";
+    URL.revokeObjectURL(img.src);
+  };
+  img.onerror=function(){alert("Gambar tidak dapat dibuka. Silakan pilih gambar lain.");URL.revokeObjectURL(img.src);};
+  img.src=URL.createObjectURL(file);
+}
+
+function clearChannels(){document.getElementById("channels").innerHTML="";}
+
+function createChannelCanvas(label,imgData){
+  const container=document.getElementById("channels");
+  const block=document.createElement("div");
+  block.className="channel-block";
+  const canvas=document.createElement("canvas");
+  canvas.width=width; canvas.height=height;
+  canvas.getContext("2d").putImageData(imgData,0,0);
+  const caption=document.createElement("p");
+  caption.textContent=label;
+  block.appendChild(canvas); block.appendChild(caption);
+  container.appendChild(block);
+}
+
+function applyConvolution(){
+  if(!originalImage)return;
+  clearChannels();
+  const kernel=[[0,-1,0],[-1,5,-1],[0,-1,0]];
+  const kSize=3, offset=1;
+  const newImgData=new ImageData(width,height);
+  const source=originalImage.data;
+
+  for(let y=0;y<height;y++){
+    for(let x=0;x<width;x++){
+      let r=0,g=0,b=0;
+      for(let ky=0;ky<kSize;ky++){
+        for(let kx=0;kx<kSize;kx++){
+          const px=Math.min(width-1,Math.max(0,x+kx-offset));
+          const py=Math.min(height-1,Math.max(0,y+ky-offset));
+          const i=(py*width+px)*4, weight=kernel[ky][kx];
+          r+=source[i]*weight;
+          g+=source[i+1]*weight;
+          b+=source[i+2]*weight;
+        }
+      }
+      const i=(y*width+x)*4;
+      newImgData.data[i]=Math.min(Math.max(r,0),255);
+      newImgData.data[i+1]=Math.min(Math.max(g,0),255);
+      newImgData.data[i+2]=Math.min(Math.max(b,0),255);
+      newImgData.data[i+3]=255;
+    }
+  }
+  createChannelCanvas("Konvolusi (Sharpening)",newImgData);
+}
+
+function histogramEqualization(){
+  if(!originalImage)return;
+  clearChannels();
+  const source=originalImage.data;
+  const totalPixels=width*height;
+  const histBefore=[new Array(256).fill(0),new Array(256).fill(0),new Array(256).fill(0)];
+
+  // Menghitung histogram setiap kanal RGB.
+  for(let i=0;i<source.length;i+=4){
+    histBefore[0][source[i]]++;
+    histBefore[1][source[i+1]]++;
+    histBefore[2][source[i+2]]++;
+  }
+
+  // Membuat pemetaan nilai baru berdasarkan CDF setiap kanal.
+  const maps=[];
+  for(let c=0;c<3;c++){
+    const cdf=[];
+    let sum=0;
+    for(let value=0;value<256;value++){
+      sum+=histBefore[c][value];
+      cdf[value]=sum/totalPixels;
+    }
+    const map=new Array(256);
+    for(let value=0;value<256;value++){
+      map[value]=Math.min(255,Math.max(0,Math.round(cdf[value]*255)));
+    }
+    maps.push(map);
+  }
+
+  // Menerapkan pemetaan pada kanal Red, Green, dan Blue.
+  const newImgData=new ImageData(width,height);
+  const histAfter=[new Array(256).fill(0),new Array(256).fill(0),new Array(256).fill(0)];
+  for(let i=0;i<source.length;i+=4){
+    const r=maps[0][source[i]];
+    const g=maps[1][source[i+1]];
+    const b=maps[2][source[i+2]];
+    newImgData.data[i]=r;
+    newImgData.data[i+1]=g;
+    newImgData.data[i+2]=b;
+    newImgData.data[i+3]=255;
+    histAfter[0][r]++; histAfter[1][g]++; histAfter[2][b]++;
+  }
+
+  createChannelCanvas("Histogram Equalization RGB",newImgData);
+  document.getElementById("histContainer").style.display="flex";
+  drawHistogram(histBefore,"histBefore");
+  drawHistogram(histAfter,"histAfter");
+}
+
+function drawHistogram(histograms,canvasId){
+  const canvas=document.getElementById(canvasId);
+  const ctx=canvas.getContext("2d");
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  const colors=["red","green","blue"];
+  let maxVal=0;
+  for(let c=0;c<3;c++)maxVal=Math.max(maxVal,...histograms[c]);
+  if(maxVal===0)return;
+
+  for(let c=0;c<3;c++){
+    ctx.beginPath();
+    ctx.strokeStyle=colors[c];
+    ctx.lineWidth=1;
+    for(let i=0;i<256;i++){
+      const x=i;
+      const y=canvas.height-(histograms[c][i]/maxVal)*canvas.height;
+      if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);
+    }
+    ctx.stroke();
+  }
+}
+</script>
+</body>
+</html>

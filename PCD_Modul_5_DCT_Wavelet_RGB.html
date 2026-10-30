@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <title>Transformasi Fourier, DCT, dan Wavelet</title>
+  <style>
+    .channel-container {
+      display: flex;
+      gap: 10px;
+      margin-top: 10px;
+      flex-wrap: wrap;
+    }
+
+    .channel-block {
+      text-align: center;
+    }
+
+    canvas {
+      border: 1px solid #000;
+      margin-top: 5px;
+      max-width: 100%;
+      height: auto;
+    }
+
+    #resolution {
+      margin-top: 10px;
+    }
+
+    button {
+      margin-top: 5px;
+      margin-right: 5px;
+    }
+
+    button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+  </style>
+</head>
+
+<body>
+  <h3>Transformasi Fourier, Kosinus Diskrit, dan Haar Wavelet 2D</h3>
+
+  <canvas id="gambar" width="128" height="128"></canvas><br>
+  <input type="file" id="file1" accept=".jpg,.jpeg,.png,.bmp"><br>
+  <div id="resolution"></div>
+
+  <p>
+    <button id="fourierBtn" onclick="transformFourier('gambar')" disabled>Fourier Transform RGB</button>
+    <button id="inverseFourierBtn" onclick="inverseFourier()" disabled>Inverse Fourier RGB</button>
+  </p>
+  <p>
+    <button id="dctBtn" onclick="transformDCT('gambar')" disabled>DCT RGB</button>
+    <button id="idctBtn" onclick="inverseDCT()" disabled>Inverse DCT RGB</button>
+  </p>
+  <p>
+    <button id="waveletBtn" onclick="transformWavelet('gambar')" disabled>Haar Wavelet</button>
+  </p>
+
+  <div id="channels" class="channel-container"></div>
+
+  <script>
+    let originalImage = null;
+    let width = 0, height = 0;
+    let originalRGB = null;
+    let fourierRGB = null;
+    let dctRGB = null;
+
+    function loadImage(fileInput, canvasId) {
+      const file = fileInput.files[0];
+      if (!file) return;
+
+      const canvas = document.getElementById(canvasId);
+      const ctx = canvas.getContext("2d");
+      const img = new Image();
+
+      img.onload = function () {
+        // Ukuran proses dibatasi agar perhitungan transformasi lebih ringan.
+        const maxSize = 128;
+        let processWidth = Math.min(img.width, maxSize);
+        let processHeight = Math.min(img.height, maxSize);
+
+        const scale = Math.min(
+          processWidth / img.width,
+          processHeight / img.height
+        );
+
+        processWidth = Math.max(2, Math.floor(img.width * scale / 2) * 2);
+        processHeight = Math.max(2, Math.floor(img.height * scale / 2) * 2);
+
+        canvas.width = processWidth;
+        canvas.height = processHeight;
+        width = processWidth;
+        height = processHeight;
+
+        ctx.clearRect(0, 0, width, height);
+        ctx.drawImage(img, 0, 0, width, height);
+
+        originalImage = img;
+        originalRGB = ctx.getImageData(0, 0, width, height);
+        fourierRGB = null;
+        dctRGB = null;
+
+        document.getElementById("resolution").textContent =
+          `Resolusi asli: ${img.width} x ${img.height} | Resolusi proses: ${width} x ${height}`;
+
+        document.getElementById("fourierBtn").disabled = false;
+        document.getElementById("dctBtn").disabled = false;
+        document.getElementById("waveletBtn").disabled = false;
+        document.getElementById("inverseFourierBtn").disabled = true;
+        document.getElementById("idctBtn").disabled = true;
+
+        clearChannels();
+        URL.revokeObjectURL(img.src);
+      };
+
+      img.onerror = function () {
+        alert("Gambar tidak dapat dibuka. Silakan pilih file gambar lain.");
+        URL.revokeObjectURL(img.src);
+      };
+
+      img.src = URL.createObjectURL(file);
+    }
+
+    function clearChannels() {
+      document.getElementById("channels").innerHTML = "";
+    }
+
+    function createChannelCanvas(label, w, h, imgData) {
+      const container = document.getElementById("channels");
+      const block = document.createElement("div");
+      block.className = "channel-block";
+
+      const canvas = document.createElement("canvas");
+      canvas.width = w;
+      canvas.height = h;
+      canvas.getContext("2d").putImageData(imgData, 0, 0);
+
+      const caption = document.createElement("p");
+      caption.textContent = label;
+
+      block.appendChild(canvas);
+      block.appendChild(caption);
+      container.appendChild(block);
+    }
+
+    function getRGBChannels() {
+      const data = originalRGB.data;
+      const R = [], G = [], B = [];
+
+      for (let y = 0; y < height; y++) {
+        R[y] = [];
+        G[y] = [];
+        B[y] = [];
+
+        for (let x = 0; x < width; x++) {
+          const i = (y * width + x) * 4;
+          R[y][x] = data[i];
+          G[y][x] = data[i + 1];
+          B[y][x] = data[i + 2];
+        }
+      }
+
+      return [R, G, B];
+    }
+
+    function createGrayImage(matrix, label, useAbs = false) {
+      const output = new ImageData(width, height);
+      let maxValue = 0;
+
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          const value = useAbs ? Math.abs(matrix[y][x]) : matrix[y][x];
+          if (value > maxValue) maxValue = value;
+        }
+      }
+
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          const i = (y * width + x) * 4;
+          let value = 0;
+
+          if (maxValue > 0) {
+            value = Math.round((Math.abs(matrix[y][x]) / maxValue) * 255);
+          }
+
+          output.data[i] = value;
+          output.data[i + 1] = value;
+          output.data[i + 2] = value;
+          output.data[i + 3] = 255;
+        }
+      }
+
+      createChannelCanvas(label, width, height, output);
+    }
+
+    function createRGBImage(channels, label) {
+      const output = new ImageData(width, height);
+
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          const i = (y * width + x) * 4;
+          output.data[i] = Math.min(255, Math.max(0, Math.round(channels[0][y][x])));
+          output.data[i + 1] = Math.min(255, Math.max(0, Math.round(channels[1][y][x])));
+          output.data[i + 2] = Math.min(255, Math.max(0, Math.round(channels[2][y][x])));
+          output.data[i + 3] = 255;
+        }
+      }
+
+      createChannelCanvas(label, width, height, output);
+    }
+
+    // ===== DFT 1D dan IDFT 1D =====
+    function DFT1D(inputReal, inputImag = null) {
+      const N = inputReal.length;
+      const real = new Array(N).fill(0);
+      const imag = new Array(N).fill(0);
+
+      for (let k = 0; k < N; k++) {
+        for (let n = 0; n < N; n++) {
+          const angle = (-2 * Math.PI * k * n) / N;
+          const valR = inputReal[n];
+          const valI = inputImag ? inputImag[n] : 0;
+
+          real[k] += valR * Math.cos(angle) - valI * Math.sin(angle);
+          imag[k] += valR * Math.sin(angle) + valI * Math.cos(angle);
+        }
+      }
+
+      return { real, imag };
+    }
+
+    function IDFT1D(inputReal, inputImag) {
+      const N = inputReal.length;
+      const outR = new Array(N).fill(0);
+      const outI = new Array(N).fill(0);
+
+      for (let n = 0; n < N; n++) {
+        let sumR = 0;
+        let sumI = 0;
+
+        for (let k = 0; k < N; k++) {
+          const angle = (2 * Math.PI * k * n) / N;
+          sumR += inputReal[k] * Math.cos(angle) - inputImag[k] * Math.sin(angle);
+          sumI += inputReal[k] * Math.sin(angle) + inputImag[k] * Math.cos(angle);
+        }
+
+        outR[n] = sumR / N;
+        outI[n] = sumI / N;
+      }
+
+      return { real: outR, imag: outI };
+    }
+
+    function DFT2D(channel) {
+      let tempReal = [], tempImag = [];
+
+      // DFT baris dan penggeseran pusat frekuensi.
+      for (let y = 0; y < height; y++) {
+        const centeredRow = channel[y].map((value, x) =>
+          value * ((x + y) % 2 === 0 ? 1 : -1)
+        );
+        const result = DFT1D(centeredRow);
+        tempReal[y] = result.real;
+        tempImag[y] = result.imag;
+      }
+
+      // DFT kolom.
+      const resultReal = Array.from({ length: height }, () => new Array(width));
+      const resultImag = Array.from({ length: height }, () => new Array(width));
+
+      for (let x = 0; x < width; x++) {
+        const colR = [], colI = [];
+
+        for (let y = 0; y < height; y++) {
+          colR.push(tempReal[y][x]);
+          colI.push(tempImag[y][x]);
+        }
+
+        const result = DFT1D(colR, colI);
+
+        for (let y = 0; y < height; y++) {
+          resultReal[y][x] = result.real[y];
+          resultImag[y][x] = result.imag[y];
+        }
+      }
+
+      return { real: resultReal, imag: resultImag };
+    }
+
+    function IDFT2D(complexData) {
+      let tempReal = [], tempImag = [];
+
+      // IDFT kolom.
+      for (let x = 0; x < width; x++) {
+        const colR = [], colI = [];
+
+        for (let y = 0; y < height; y++) {
+          colR.push(complexData.real[y][x]);
+          colI.push(complexData.imag[y][x]);
+        }
+
+        const result = IDFT1D(colR, colI);
+
+        for (let y = 0; y < height; y++) {
+          if (!tempReal[y]) {
+            tempReal[y] = [];
+            tempImag[y] = [];
+          }
+          tempReal[y][x] = result.real[y];
+          tempImag[y][x] = result.imag[y];
+        }
+      }
+
+      // IDFT baris dan mengembalikan penggeseran pusat.
+      const output = Array.from({ length: height }, () => new Array(width));
+
+      for (let y = 0; y < height; y++) {
+        const result = IDFT1D(tempReal[y], tempImag[y]);
+
+        for (let x = 0; x < width; x++) {
+          output[y][x] = result.real[x] * ((x + y) % 2 === 0 ? 1 : -1);
+        }
+      }
+
+      return output;
+    }
+
+    function showFourierMagnitude(complexData, label) {
+      const magnitude = [];
+
+      for (let y = 0; y < height; y++) {
+        magnitude[y] = [];
+        for (let x = 0; x < width; x++) {
+          const real = complexData.real[y][x];
+          const imag = complexData.imag[y][x];
+          magnitude[y][x] = Math.log(1 + Math.sqrt(real * real + imag * imag));
+        }
+      }
+
+      createGrayImage(magnitude, label);
+    }
+
+    function transformFourier() {
+      clearChannels();
+      const channels = getRGBChannels();
+
+      fourierRGB = channels.map(channel => DFT2D(channel));
+
+      showFourierMagnitude(fourierRGB[0], "Fourier Red");
+      showFourierMagnitude(fourierRGB[1], "Fourier Green");
+      showFourierMagnitude(fourierRGB[2], "Fourier Blue");
+
+      document.getElementById("inverseFourierBtn").disabled = false;
+    }
+
+    function inverseFourier() {
+      if (!fourierRGB) {
+        alert("Silakan lakukan Fourier Transform terlebih dahulu!");
+        return;
+      }
+
+      clearChannels();
+      const restored = fourierRGB.map(channel => IDFT2D(channel));
+      createRGBImage(restored, "Inverse Fourier RGB");
+    }
+
+    // ===== DCT 1D dan IDCT 1D =====
+    function DCT1D(vector) {
+      const N = vector.length;
+      const result = new Array(N).fill(0);
+      const factor = Math.PI / N;
+
+      for (let k = 0; k < N; k++) {
+        let sum = 0;
+
+        for (let n = 0; n < N; n++) {
+          sum += vector[n] * Math.cos(factor * k * (n + 0.5));
+        }
+
+        result[k] = sum * (k === 0 ? Math.sqrt(1 / N) : Math.sqrt(2 / N));
+      }
+
+      return result;
+    }
+
+    function IDCT1D(vector) {
+      const N = vector.length;
+      const result = new Array(N).fill(0);
+      const factor = Math.PI / N;
+
+      for (let n = 0; n < N; n++) {
+        let sum = 0;
+
+        for (let k = 0; k < N; k++) {
+          const coef = k === 0 ? Math.sqrt(1 / N) : Math.sqrt(2 / N);
+          sum += coef * vector[k] * Math.cos(factor * k * (n + 0.5));
+        }
+
+        result[n] = sum;
+      }
+
+      return result;
+    }
+
+    function DCT2D(channel) {
+      const temp = [];
+
+      for (let y = 0; y < height; y++) {
+        temp[y] = DCT1D(channel[y]);
+      }
+
+      const output = Array.from({ length: height }, () => new Array(width));
+
+      for (let x = 0; x < width; x++) {
+        const col = [];
+
+        for (let y = 0; y < height; y++) {
+          col.push(temp[y][x]);
+        }
+
+        const dctCol = DCT1D(col);
+
+        for (let y = 0; y < height; y++) {
+          output[y][x] = dctCol[y];
+        }
+      }
+
+      return output;
+    }
+
+    function IDCT2D(matrix) {
+      const temp = Array.from({ length: height }, () => new Array(width));
+
+      for (let x = 0; x < width; x++) {
+        const col = [];
+
+        for (let y = 0; y < height; y++) {
+          col.push(matrix[y][x]);
+        }
+
+        const idctCol = IDCT1D(col);
+
+        for (let y = 0; y < height; y++) {
+          temp[y][x] = idctCol[y];
+        }
+      }
+
+      const output = [];
+
+      for (let y = 0; y < height; y++) {
+        output[y] = IDCT1D(temp[y]);
+      }
+
+      return output;
+    }
+
+    // Menampilkan koefisien DCT dengan skala logaritmik
+    // agar perbedaan nilai koefisien lebih mudah terlihat.
+    function createDCTImage(matrix, label) {
+      const output = new ImageData(width, height);
+      let maxValue = 0;
+      const values = [];
+
+      for (let y = 0; y < height; y++) {
+        values[y] = [];
+        for (let x = 0; x < width; x++) {
+          const value = Math.log(1 + Math.abs(matrix[y][x]));
+          values[y][x] = value;
+          if (Number.isFinite(value) && value > maxValue) {
+            maxValue = value;
+          }
+        }
+      }
+
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          const i = (y * width + x) * 4;
+          let value = 0;
+
+          if (maxValue > 0 && Number.isFinite(values[y][x])) {
+            value = Math.round((values[y][x] / maxValue) * 255);
+          }
+
+          output.data[i] = value;
+          output.data[i + 1] = value;
+          output.data[i + 2] = value;
+          output.data[i + 3] = 255;
+        }
+      }
+
+      createChannelCanvas(label, width, height, output);
+    }
+
+    function transformDCT() {
+      clearChannels();
+      const channels = getRGBChannels();
+
+      dctRGB = channels.map(channel => DCT2D(channel));
+
+      createDCTImage(dctRGB[0], "DCT Red");
+      createDCTImage(dctRGB[1], "DCT Green");
+      createDCTImage(dctRGB[2], "DCT Blue");
+
+      document.getElementById("idctBtn").disabled = false;
+    }
+
+    function inverseDCT() {
+      if (!dctRGB) {
+        alert("Silakan lakukan DCT terlebih dahulu!");
+        return;
+      }
+
+      clearChannels();
+      const restored = dctRGB.map(channel => IDCT2D(channel));
+      createRGBImage(restored, "Inverse DCT RGB");
+    }
+
+    // ===== Haar Wavelet 1D dan 2D =====
+    function haarWavelet1D(vector) {
+      const N = vector.length;
+      const output = new Array(N).fill(0);
+      const half = Math.floor(N / 2);
+
+      for (let i = 0; i < half; i++) {
+        output[i] = (vector[2 * i] + vector[2 * i + 1]) / 2;
+        output[half + i] = (vector[2 * i] - vector[2 * i + 1]) / 2;
+      }
+
+      return output;
+    }
+
+    function transformWavelet() {
+      clearChannels();
+
+      const channels = getRGBChannels();
+      const gray = [];
+
+      for (let y = 0; y < height; y++) {
+        gray[y] = [];
+
+        for (let x = 0; x < width; x++) {
+          gray[y][x] = Math.round(
+            0.299 * channels[0][y][x] +
+            0.587 * channels[1][y][x] +
+            0.114 * channels[2][y][x]
+          );
+        }
+      }
+
+      // Transformasi baris.
+      const temp = [];
+
+      for (let y = 0; y < height; y++) {
+        temp[y] = haarWavelet1D(gray[y]);
+      }
+
+      // Transformasi kolom.
+      const wavelet2D = Array.from({ length: height }, () => new Array(width));
+
+      for (let x = 0; x < width; x++) {
+        const col = [];
+
+        for (let y = 0; y < height; y++) {
+          col.push(temp[y][x]);
+        }
+
+        const transformedCol = haarWavelet1D(col);
+
+        for (let y = 0; y < height; y++) {
+          wavelet2D[y][x] = transformedCol[y];
+        }
+      }
+
+      const halfW = Math.floor(width / 2);
+      const halfH = Math.floor(height / 2);
+
+      function createWaveletPart(label, startX, startY, w, h) {
+        const output = new ImageData(width, height);
+        let maxVal = 0;
+
+        for (let y = 0; y < h; y++) {
+          for (let x = 0; x < w; x++) {
+            const value = Math.abs(wavelet2D[startY + y][startX + x]);
+            if (value > maxVal) maxVal = value;
+          }
+        }
+
+        for (let y = 0; y < h; y++) {
+          for (let x = 0; x < w; x++) {
+            const value = maxVal === 0 ? 0 :
+              Math.round((Math.abs(wavelet2D[startY + y][startX + x]) / maxVal) * 255);
+            const i = ((startY + y) * width + (startX + x)) * 4;
+
+            output.data[i] = value;
+            output.data[i + 1] = value;
+            output.data[i + 2] = value;
+            output.data[i + 3] = 255;
+          }
+        }
+
+        createChannelCanvas(label, width, height, output);
+      }
+
+      createWaveletPart("LL (Approximation)", 0, 0, halfW, halfH);
+      createWaveletPart("LH (Horizontal)", halfW, 0, width - halfW, halfH);
+      createWaveletPart("HL (Vertical)", 0, halfH, halfW, height - halfH);
+      createWaveletPart("HH (Diagonal)", halfW, halfH, width - halfW, height - halfH);
+    }
+
+    document.getElementById("file1").addEventListener("change", function () {
+      loadImage(this, "gambar");
+    });
+  </script>
+</body>
+</html>
